@@ -1,0 +1,161 @@
+/**
+ * {{ name }} MCP Server
+ * 
+ * {{ description }}
+ */
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import axios, { AxiosInstance } from "axios";
+
+// Configuration
+const BASE_URL = "{{ base_url or 'https://api.example.com' }}";
+{% if has_auth %}
+// Authentication configuration (to be implemented)
+const AUTH_TOKEN: string | null = null;
+{% endif %}
+
+// Create axios instance
+let client: AxiosInstance;
+
+function createClient(): AxiosInstance {
+  if (!client) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": "{{ name }}/{{ version }}",
+    };
+    {% if has_auth %}
+    if (AUTH_TOKEN) {
+      headers["Authorization"] = `Bearer ${AUTH_TOKEN}`;
+    }
+    {% endif %}
+    client = axios.create({
+      baseURL: BASE_URL,
+      headers,
+      timeout: 30000,
+    });
+  }
+  return client;
+}
+
+// Create MCP server
+const server = new Server(
+  {
+    name: "{{ name }}",
+    version: "{{ version }}",
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+{% for endpoint in endpoints %}
+// Register {{ endpoint.operation_id }} tool
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {% for endpoint in endpoints %}
+      {
+        name: "{{ endpoint.operation_id }}",
+        description: `{{ endpoint.summary or endpoint.description or endpoint.operation_id }}`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            {% for param in endpoint.parameters %}
+            "{{ param.name }}": {
+              type: "{{ param.type }}",
+              {% if not param.required %}
+              optional: true,
+              {% endif %}
+              {% if param.description %}
+              description: `{{ param.description }}`,
+              {% endif %}
+            },
+            {% endfor %}
+          },
+          {% if endpoint.parameters | selectattr('required', 'equalto', true) | list | length > 0 %}
+          required: [
+            {% for param in endpoint.parameters if param.required %}
+            "{{ param.name }}",
+            {% endfor %}
+          ],
+          {% endif %}
+        },
+      },
+      {% endfor %}
+    ],
+  };
+});
+
+{% endfor %}
+// Handle tool execution
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+
+  try {
+    switch (name) {
+      {% for endpoint in endpoints %}
+      case "{{ endpoint.operation_id }}":
+        return await {{ endpoint.operation_id | replace('-', '_') | replace('.', '_') }}(args);
+      {% endfor %}
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`,
+          },
+        ],
+      };
+    }
+    throw error;
+  }
+});
+
+{% for endpoint in endpoints %}
+async function {{ endpoint.operation_id | replace('-', '_') | replace('.', '_') }}(
+  {% for param in endpoint.parameters %}
+  {{ param.name | replace('-', '_') }}{% if param.optional %}?{% endif %}: {{ param.type | title }}{% if not loop.last %}, {% endif %}
+  {% endfor %}
+): Promise<any> {
+  const client = createClient();
+  
+  const params = new URLSearchParams();
+  {% for param in endpoint.parameters if param.location == 'query' %}
+  if ({{ param.name | replace('-', '_') }} !== undefined) {
+    params.append("{{ param.name }}", String({{ param.name | replace('-', '_') }}));
+  }
+  {% endfor %}
+  
+  let path = "{{ endpoint.path }}";
+  {% for param in endpoint.parameters if param.location == 'path' %}
+  path = path.replace(`{${{ param.name }}}`, String({{ param.name | replace('-', '_') }}));
+  {% endfor %}
+  
+  const response = await client.{{ endpoint.method }}(path, {
+    {% if endpoint.parameters | selectattr('location', 'equalto', 'query') | list | length > 0 %}
+    params,
+    {% endif %}
+  });
+  
+  return response.data;
+}
+
+{% endfor %}
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("{{ name }} MCP server running on stdio");
+}
+
+main().catch(console.error);

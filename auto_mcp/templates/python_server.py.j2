@@ -1,0 +1,105 @@
+"""
+{{ name }} MCP Server
+
+{{ description }}
+"""
+
+from typing import Any
+
+import httpx
+from fastmcp import FastMCP
+
+# Initialize the MCP server
+mcp = FastMCP(name="{{ name }}")
+
+# Configuration
+BASE_URL = "{{ base_url or 'https://api.example.com' }}"
+{% if has_auth %}
+# Authentication configuration (to be implemented)
+AUTH_TOKEN = None
+{% endif %}
+
+# HTTP client for API requests
+_client: httpx.AsyncClient | None = None
+
+
+def get_client() -> httpx.AsyncClient:
+    """Get or create the HTTP client."""
+    global _client
+    if _client is None:
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "{{ name }}/{{ version }}",
+        }
+        {% if has_auth %}
+        if AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
+        {% endif %}
+        _client = httpx.AsyncClient(base_url=BASE_URL, headers=headers, timeout=30.0)
+    return _client
+
+
+{% for endpoint in endpoints %}
+@mcp.tool()
+async def {{ endpoint.operation_id | replace('-', '_') | replace('.', '_') }}(
+{% for param in endpoint.parameters %}
+    {{ param.name | replace('-', '_') }}: {{ param.type | python_type }}{% if not param.required %} = None{% endif %}{{ "," if not loop.last else "" }}
+{% endfor %}
+) -> dict[str, Any]:
+    """
+    {{ endpoint.summary or endpoint.description or endpoint.operation_id }}
+    {% if endpoint.description and endpoint.summary %}
+    
+    {{ endpoint.description }}
+    {% endif %}
+    
+    API Endpoint: {{ endpoint.method | upper }} {{ endpoint.path }}
+    """
+    client = get_client()
+    
+    {% if endpoint.parameters %}
+    # Build request parameters
+    path_params = {}
+    query_params = {}
+    headers = {}
+    
+    {% for param in endpoint.parameters %}
+    {% if param.location == 'path' %}
+    if {{ param.name | replace('-', '_') }} is not None:
+        path_params["{{ param.name }}"] = {{ param.name | replace('-', '_') }}
+    {% elif param.location == 'query' %}
+    if {{ param.name | replace('-', '_') }} is not None:
+        query_params["{{ param.name }}"] = {{ param.name | replace('-', '_') }}
+    {% elif param.location == 'header' %}
+    if {{ param.name | replace('-', '_') }} is not None:
+        headers["{{ param.name }}"] = {{ param.name | replace('-', '_') }}
+    {% endif %}
+    {% endfor %}
+    
+    # Build the URL path
+    path = "{{ endpoint.path }}"
+    {% for param in endpoint.parameters if param.location == 'path' %}
+    path = path.replace("{", "").replace("}", "").replace("{{ param.name }}", str(path_params.get("{{ param.name }}", "")))
+    {% endfor %}
+    {% else %}
+    path = "{{ endpoint.path }}"
+    {% endif %}
+    
+    # Make the API request
+    response = await client.{{ endpoint.method }}(
+        path,
+        {% if endpoint.parameters %}
+        params=query_params if query_params else None,
+        {% endif %}
+    )
+    response.raise_for_status()
+    
+    return response.json()
+
+
+{% endfor %}
+
+
+if __name__ == "__main__":
+    # Run the MCP server
+    mcp.run()
